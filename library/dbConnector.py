@@ -35,4 +35,14 @@ class DbConn:
 
             self.export_csv(table_data, table)
 
+    def exec_file_sql(self, file):
+        conn = self.engine.connect()
+
+        if os.stat(file).st_size != 0:
+            print('Executing import query of file: {}'.format(file))
+            return conn.execute(open(file).read())
+        else:
+            return False
+
+
 
