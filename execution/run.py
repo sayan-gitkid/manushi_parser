@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from library.dbConnector import DbConn
 import pandas as pd
 import datetime
@@ -94,6 +96,23 @@ def client_query(row):
     ins_client_query += query
 
 
+def batch_entry_query(row):
+    global ins_batch_entry_query
+    producer = 'null'
+    if str(row['producer']) != 'nan':
+        producer = row['id']
+    query = """insert into batch_entry(version, bill_code, bill_total, date_created, last_updated, producer_id) 
+                values (0,"{}",{},"{}","{}",{});\n""".format(
+        row['bill_code'],
+        Decimal(row['cost_price']) * Decimal(row['quantity']),
+        today_date(),
+        today_date(),
+        producer
+    )
+    ins_batch_entry_query += query
+
+
+
 def migrate_units(old_db, new_db):
     old_units = old_db.exec_query("select * from product_unit")
     new_units = new_db.exec_query("select * from product_unit")
@@ -187,6 +206,45 @@ def migrate_client(old_db, new_db):
         w.writelines(ins_client_query)
 
 
+def batch_detail_query(row):
+    global ins_batch_detail_entry
+    sp = "null"
+    if str(row['selling_price']) != 'nan':
+        sp = Decimal(row['selling_price'])
+
+    ins_batch_detail_entry += """insert into batch_detail_entry(version, batch_entry_id,
+                                  cost_price, date_created, last_updated, location_code,
+                                   product_id, quantity, sale_price, selling_price) 
+                                   values (0,{},{},"{}","{}", "{}", "{}", {}, {}, {});\n""".format(
+        row['id_new'],
+        row['cost_price'],
+        today_date(),
+        today_date(),
+        row['location_code'],
+        row['product'],
+        row['quantity'],
+        "null",
+        sp
+    )
+
+
+def warehouse_query(row):
+    global ins_warehouse_query
+    ins_warehouse_query += """insert into warehouse_inventory(version, date_created, last_updated,
+                              product_id, quantity, selling_price, area, comment) 
+                                values (
+                                0,"{}","{}","{}",{},{},"{}","{}"
+                                );\n""".format(
+        today_date(),
+        today_date(),
+        row['product_id'],
+        row['quantity'],
+        0,
+        row['location_code'],
+        ''
+    )
+
+
 def migrate_batch_entry(old_db, new_db):
     # prod_entry to warehouse_inventory
     # bill_code gen with id
@@ -194,18 +252,53 @@ def migrate_batch_entry(old_db, new_db):
     #     bill total null
     old_prod_entry = old_db.exec_query("select * from product_entry")
     old_producer = old_db.exec_query("select * from producer")
-    old_prod_entry['batch_code'] = old_prod_entry['id'].astype('str') + '__' + old_prod_entry['product'].astype('str')
+    batch_entry = new_db.exec_query("select * from batch_entry")
+    old_prod_entry['bill_code'] = old_prod_entry['id'].astype('str') + '__' + old_prod_entry['product'].astype('str')
+    ins = list(set(old_prod_entry['bill_code']) - set(batch_entry['bill_code']))
     old_prod_entry = pd.merge(old_prod_entry,old_producer, how="left", left_on="producer", right_on="id")
 
-    batch_entry = new_db.exec_query("select * from batch_entry")
     new_producer = new_db.exec_query("select * from producer")
     old_prod_entry = pd.merge(old_prod_entry, new_producer, how="left", left_on="producer_name", right_on="name")
-    new_sample_prod = new_db.exec_query("select * from sample_product")
-    old_prod_entry = pd.merge(old_prod_entry, new_sample_prod, how="left", left_on="product", right_on="item_no")
+    old_prod_entry[old_prod_entry['bill_code'].isin(ins)].apply(batch_entry_query, axis=1)
 
-    print(old_prod_entry.shape)
-    print(old_prod_entry)
-    asd = 10
+    # new_sample_prod = new_db.exec_query("select * from sample_product")
+    # old_prod_entry = pd.merge(old_prod_entry, new_sample_prod, how="left", left_on="product", right_on="item_no")
+
+    # print(old_prod_entry.shape)
+    # print(old_prod_entry.head)
+    with open('/home/sshakya/PycharmProjects/manushi_parser/query/batch_entry.sql', 'w') as w:
+        print(dir(w))
+        w.writelines(ins_batch_entry_query)
+    new_db.exec_file_sql("/home/sshakya/PycharmProjects/manushi_parser/query/batch_entry.sql")
+    batch_entry = new_db.exec_query("select * from batch_entry")
+    # batch_entry = batch_entry[batch_entry['bill_code'].isin(ins)]
+    batch_entry = batch_entry[['id', 'bill_code']].copy()
+    old_prod_entry = pd.merge(old_prod_entry, batch_entry, how='left', left_on='bill_code',
+                              right_on='bill_code', suffixes=('_old', '_new'))
+    old_prod_entry.apply(batch_detail_query, axis=1)
+    with open('/home/sshakya/PycharmProjects/manushi_parser/query/batch_detail_entry.sql', 'w') as w:
+        print(dir(w))
+        w.writelines(ins_batch_detail_entry)
+
+    new_db.exec_file_sql("/home/sshakya/PycharmProjects/manushi_parser/query/batch_detail_entry.sql")
+
+    batch_detail = new_db.exec_query("select * from batch_detail_entry")
+    item_group = batch_detail.groupby('product_id', as_index=False).agg({
+        'quantity': 'sum',
+        'location_code': 'first'
+    })
+    # batch_detail = pd.merge(item_group,batch_detail, how="left", left_on="product_id", right_on="product_id")
+    item_group.apply(warehouse_query, axis=1)
+
+    with open('/home/sshakya/PycharmProjects/manushi_parser/query/warehouse.sql', 'w') as w:
+        print(dir(w))
+        w.writelines(ins_warehouse_query)
+
+    new_db.exec_file_sql("/home/sshakya/PycharmProjects/manushi_parser/query/warehouse.sql")
+    asd = 12
+
+
+
 
 
 def main():
@@ -214,11 +307,18 @@ def main():
     global ins_sample_prod_query
     global ins_producer_query
     global ins_client_query
+    global ins_batch_entry_query
+    global ins_batch_detail_entry
+    global ins_warehouse_query
+
     ins_prod_unit_query = ""
     ins_cat_query = ""
     ins_sample_prod_query = ""
     ins_producer_query = ""
     ins_client_query = ""
+    ins_batch_entry_query = ""
+    ins_batch_detail_entry = ""
+    ins_warehouse_query = ""
 
     mysql = DbConn(db='db_manushi_old',
                    user='root',
