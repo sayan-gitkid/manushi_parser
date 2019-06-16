@@ -112,7 +112,6 @@ def batch_entry_query(row):
     ins_batch_entry_query += query
 
 
-
 def migrate_units(old_db, new_db):
     old_units = old_db.exec_query("select * from product_unit")
     new_units = new_db.exec_query("select * from product_unit")
@@ -255,7 +254,7 @@ def migrate_batch_entry(old_db, new_db):
     batch_entry = new_db.exec_query("select * from batch_entry")
     old_prod_entry['bill_code'] = old_prod_entry['id'].astype('str') + '__' + old_prod_entry['product'].astype('str')
     ins = list(set(old_prod_entry['bill_code']) - set(batch_entry['bill_code']))
-    old_prod_entry = pd.merge(old_prod_entry,old_producer, how="left", left_on="producer", right_on="id")
+    old_prod_entry = pd.merge(old_prod_entry, old_producer, how="left", left_on="producer", right_on="id")
 
     new_producer = new_db.exec_query("select * from producer")
     old_prod_entry = pd.merge(old_prod_entry, new_producer, how="left", left_on="producer_name", right_on="name")
@@ -283,22 +282,190 @@ def migrate_batch_entry(old_db, new_db):
     new_db.exec_file_sql("/home/sshakya/PycharmProjects/manushi_parser/query/batch_detail_entry.sql")
 
     batch_detail = new_db.exec_query("select * from batch_detail_entry")
+    warehouse_inventory = new_db.exec_query("select * from warehouse_inventory")
+    warehouse_item_insert = list(set(batch_detail['product_id']) - set(warehouse_inventory['product_id']))
+
     item_group = batch_detail.groupby('product_id', as_index=False).agg({
         'quantity': 'sum',
         'location_code': 'first'
     })
     # batch_detail = pd.merge(item_group,batch_detail, how="left", left_on="product_id", right_on="product_id")
-    item_group.apply(warehouse_query, axis=1)
+    item_group[item_group['product_id'].isin(warehouse_item_insert)].apply(warehouse_query, axis=1)
 
     with open('/home/sshakya/PycharmProjects/manushi_parser/query/warehouse.sql', 'w') as w:
         print(dir(w))
         w.writelines(ins_warehouse_query)
 
     new_db.exec_file_sql("/home/sshakya/PycharmProjects/manushi_parser/query/warehouse.sql")
-    asd = 12
 
 
+def shipping_query(row):
+    global ins_shipping_query
+    ins_shipping_query += """
+    insert into shipping(version, batch_code, date_created, estimated_delivery_date,
+     is_in_progress, last_updated, remarks, shipped_date, shipping_status_id, store_id)
+     VALUES (
+      0,"{}","{}","{}",{},"{}", "{}","{}",{},1
+     );\n
+    """.format(
+        row['batch_code'],
+        today_date(),
+        row['shipped_date'],
+        "false",
+        today_date(),
+        "",
+        row['shipped_date'],
+        row['shipping_status'],
+    )
 
+
+def shipping_details_query(row):
+    global ins_shipping_details_query
+
+    sp = row['selling_price']
+    if str(row['selling_price']) == 'nan':
+        sp = 0.0
+
+    ins_shipping_details_query += """
+        insert into shipping_details(version, date_created, last_updated,
+         selling_price, shipping_id, shipping_product_id, shipping_quantity)
+         VALUES (
+          0,"{}","{}", {},{},"{}",{}
+         );\n
+        """.format(
+        today_date(),
+        today_date(),
+        sp,
+        row['id_y'],
+        row['id'],
+        row['quantity']
+    )
+
+
+def migrate_shipping(old_db, new_db):
+    old_shipping = old_db.exec_query("select * from shipping")
+    old_shipping['batch_code'] = old_shipping['id'].astype(str) + '__' + old_shipping['item_no']
+    old_shipping['shipping_status'] = old_shipping['shipping_status'].replace({
+        'accepted': '1',
+        'pending': '2',
+        'rejected': '3'
+    })
+    new_shipping = new_db.exec_query("select * from shipping")
+
+    ship_insert = list(set(old_shipping['batch_code']) - set(new_shipping['batch_code']))
+    old_shipping[old_shipping['batch_code'].isin(ship_insert)].apply(shipping_query, axis=1)
+
+    with open('/home/sshakya/PycharmProjects/manushi_parser/query/shipping.sql', 'w') as w:
+        print(dir(w))
+        w.writelines(ins_shipping_query)
+
+    new_db.exec_file_sql("/home/sshakya/PycharmProjects/manushi_parser/query/shipping.sql")
+    new_shipping = new_db.exec_query("select * from shipping")
+    old_shipping = pd.merge(old_shipping, new_shipping[['id', 'batch_code']], how="left", left_on="batch_code",
+                            right_on="batch_code")
+    warehouse_inv = new_db.exec_query("select * from warehouse_inventory")
+    old_shipping = pd.merge(old_shipping, warehouse_inv[['id', 'product_id']], how="left",
+                            left_on='item_no', right_on='product_id', suffixes=('_item', '_ware'))
+    old_shipping.apply(shipping_details_query, axis=1)
+    with open('/home/sshakya/PycharmProjects/manushi_parser/query/shipping_details.sql', 'w') as w:
+        print(dir(w))
+        w.writelines(ins_shipping_details_query)
+
+    new_db.exec_file_sql("/home/sshakya/PycharmProjects/manushi_parser/query/shipping_details.sql")
+
+
+def excel_query_ins(row, unit_none_id, cat_none_id):
+    global excel_sp_ins
+
+    excel_sp_ins += """insert into sample_product(item_no, version, category_id,
+                date_created, description, image_url, last_updated, name, unit_id) 
+                VALUES ("{}", 0, {},"{}","{}","{}","{}","{}",{} );\n""".format(
+        row['Code'],
+        cat_none_id,
+        today_date(),
+        "",
+        "",
+        today_date(),
+        row['Particular'],
+        unit_none_id
+    )
+
+
+def excel_wi_q_ins(row):
+    global excle_wi_ins
+    excle_wi_ins += """insert into warehouse_inventory(version, date_created, last_updated,
+                                  product_id, quantity, selling_price, area, comment) 
+                                    values (
+                                    0,"{}","{}","{}",{},{},"{}","{}"
+                                    );\n""".format(
+        today_date(),
+        today_date(),
+        row['product_id'],
+        row['quantity'],
+        0,
+        row['location_code'],
+        ''
+    )
+
+
+def migrate_excel(new_db, excel_path):
+    new_sample_prod = new_db.exec_query("select * from sample_product")
+    new_warehouse_inventory = new_db.exec_query("select * from warehouse_inventory")
+    new_category = new_db.exec_query("select * from product_category")
+    new_unit_df = new_db.exec_query("select * from product_unit")
+    none_unit_id = new_unit_df[new_unit_df['unit_code'] == 'none']['id'].tolist()
+    if len(none_unit_id) != 1:
+        print("Insert None unit in product_unit")
+        exit(0)
+    else:
+        none_unit_db_id = none_unit_id[0]
+
+    none_cat_id = new_category[new_category['category_code'] == 'none']['id'].tolist()
+    if len(none_cat_id) != 1:
+        print("Insert None unit in product_unit")
+        exit(0)
+    else:
+        none_cat_db_id = none_cat_id[0]
+
+    df = pd.read_csv(excel_path)
+    code_len = len(df['Code'].tolist())
+    code_unique_len = len(list(set(df['Code'].tolist())))
+
+    seen = set()
+    uniq = []
+    dups = []
+    for x in df['Code'].tolist():
+        if x not in seen:
+            uniq.append(x)
+            seen.add(x)
+        else:
+            dups.append(x)
+
+    df[df['Code'].isin(dups)].to_csv('duplicate_values.csv', index=False)
+
+    new_itemNo = new_sample_prod['item_no']
+    df_itemNo = df['Code']
+    item_ins = list(set(df_itemNo) - set(new_itemNo))
+    df_excel_ins = df[df['Code'].isin(item_ins)]
+    df_excel_ins.apply(excel_query_ins, axis=1, args=([none_unit_db_id, none_cat_db_id]))
+
+    with open('/home/sshakya/PycharmProjects/manushi_parser/query/excel_sp_ins.sql', 'w') as w:
+        print(dir(w))
+        w.writelines(excel_sp_ins)
+
+    new_db.exec_file_sql("/home/sshakya/PycharmProjects/manushi_parser/query/excel_sp_ins.sql")
+
+    if code_len != code_unique_len:
+        print('Excel data contains duplicate Code values')
+        exit(0)
+
+    # with open('/home/sshakya/PycharmProjects/manushi_parser/query/excel_wi_ins.sql', 'w') as w:
+    #     print(dir(w))
+    #     w.writelines(excel_wi_ins)
+    #
+    # new_db.exec_file_sql("/home/sshakya/PycharmProjects/manushi_parser/query/excel_wi_ins.sql")
+
+    asdf = 10
 
 
 def main():
@@ -310,6 +477,10 @@ def main():
     global ins_batch_entry_query
     global ins_batch_detail_entry
     global ins_warehouse_query
+    global ins_shipping_query
+    global ins_shipping_details_query
+    global excel_sp_ins
+    global excel_wi_ins
 
     ins_prod_unit_query = ""
     ins_cat_query = ""
@@ -319,16 +490,20 @@ def main():
     ins_batch_entry_query = ""
     ins_batch_detail_entry = ""
     ins_warehouse_query = ""
+    ins_shipping_query = ""
+    ins_shipping_details_query = ""
+    excel_sp_ins = ""
+    excel_wi_ins = ""
 
     mysql = DbConn(db='db_manushi_old',
                    user='root',
                    password='password')
 
-    to_db = DbConn(db='db_manushi_new_migrate',
+    to_db = DbConn(db='db_manushi2',
                    user='root',
                    password='password')
-    # tables = mysql.exec_query("show tables")
-    # mysql.export_tables(mysql)
+    tables = mysql.exec_query("show tables")
+    mysql.export_tables(mysql)
     migrate_units(mysql, to_db)
     migrate_category(mysql, to_db)
 
@@ -346,7 +521,9 @@ def main():
 
     migrate_batch_entry(mysql, to_db)
 
-    asdf = 10
+    migrate_shipping(mysql, to_db)
+
+    migrate_excel(to_db, "/home/sshakya/PycharmProjects/manushi_parser/valid_data/valid.csv")
 
 
 if __name__ == "__main__":

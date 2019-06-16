@@ -205,6 +205,7 @@ def migrate_batch_entry(old_db, new_db):
 
     print(old_prod_entry.shape)
     print(old_prod_entry)
+
     asd = 10
 
 
