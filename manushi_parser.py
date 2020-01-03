@@ -79,17 +79,17 @@ def producer_query(row):
 
 def client_query(row):
     global ins_client_query
-    query = """insert into client(version, billing_address, billing_address_same_as_shipping_address, 
+    query = """insert into client(version, billing_address, is_producer, 
                 country, date_created, description, last_updated, name, shipping_address)
                 VALUES (0,"{}",{},"{}","{}","{}","{}","{}", {});\n""".format(
         escape_string(row['address']),
-        1,
+        0,
         "",
         today_date(),
         escape_string(row['client_desc']).strip(),
         today_date(),
         escape_string(row['client_name']),
-        "null"
+        "null",
     )
     ins_client_query += query
 
@@ -225,7 +225,7 @@ def main():
                    user='root',
                    password='password')
 
-    to_db = DbConn(db='db_manushi_new_migrate',
+    to_db = DbConn(db='db_manu_refactored',
                    user='root',
                    password='password')
     # tables = mysql.exec_query("show tables")

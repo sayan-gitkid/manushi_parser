@@ -392,18 +392,19 @@ def excel_query_ins(row, unit_none_id, cat_none_id):
 
 
 def excel_wi_q_ins(row):
-    global excle_wi_ins
-    excle_wi_ins += """insert into warehouse_inventory(version, date_created, last_updated,
+    global excel_wi_ins
+
+    excel_wi_ins += """insert into warehouse_inventory(version, date_created, last_updated,
                                   product_id, quantity, selling_price, area, comment) 
                                     values (
                                     0,"{}","{}","{}",{},{},"{}","{}"
                                     );\n""".format(
         today_date(),
         today_date(),
-        row['product_id'],
-        row['quantity'],
-        0,
-        row['location_code'],
+        row['Code'],
+        row['Qty'],
+        row['Rate'],
+        row['Area'],
         ''
     )
 
@@ -428,26 +429,34 @@ def migrate_excel(new_db, excel_path):
         none_cat_db_id = none_cat_id[0]
 
     df = pd.read_csv(excel_path)
-    code_len = len(df['Code'].tolist())
-    code_unique_len = len(list(set(df['Code'].tolist())))
-
-    seen = set()
-    uniq = []
-    dups = []
-    for x in df['Code'].tolist():
-        if x not in seen:
-            uniq.append(x)
-            seen.add(x)
-        else:
-            dups.append(x)
-
-    df[df['Code'].isin(dups)].to_csv('duplicate_values.csv', index=False)
+    item_group = df.groupby('Code', as_index=False).agg({
+        'Area': 'first',
+        'Particular': 'first',
+        'Qty': 'sum',
+        'Rate': 'first'
+    })
+    # duplicate check
+    # code_len = len(df['Code'].tolist())
+    # code_unique_len = len(list(set(df['Code'].tolist())))
+    #
+    # seen = set()
+    # uniq = []
+    # dups = []
+    # for x in df['Code'].tolist():
+    #     if x not in seen:
+    #         uniq.append(x)
+    #         seen.add(x)
+    #     else:
+    #         dups.append(x)
+    #
+    # df[df['Code'].isin(dups)].to_csv('duplicate_values.csv', index=False)
 
     new_itemNo = new_sample_prod['item_no']
-    df_itemNo = df['Code']
+    df_itemNo = item_group['Code']
     item_ins = list(set(df_itemNo) - set(new_itemNo))
-    df_excel_ins = df[df['Code'].isin(item_ins)]
+    df_excel_ins = item_group[item_group['Code'].isin(item_ins)]
     df_excel_ins.apply(excel_query_ins, axis=1, args=([none_unit_db_id, none_cat_db_id]))
+    item_group.apply(excel_wi_q_ins, axis=1)
 
     with open('/home/sshakya/PycharmProjects/manushi_parser/query/excel_sp_ins.sql', 'w') as w:
         print(dir(w))
@@ -455,15 +464,16 @@ def migrate_excel(new_db, excel_path):
 
     new_db.exec_file_sql("/home/sshakya/PycharmProjects/manushi_parser/query/excel_sp_ins.sql")
 
-    if code_len != code_unique_len:
-        print('Excel data contains duplicate Code values')
-        exit(0)
 
-    # with open('/home/sshakya/PycharmProjects/manushi_parser/query/excel_wi_ins.sql', 'w') as w:
-    #     print(dir(w))
-    #     w.writelines(excel_wi_ins)
-    #
-    # new_db.exec_file_sql("/home/sshakya/PycharmProjects/manushi_parser/query/excel_wi_ins.sql")
+    # if code_len != code_unique_len:
+    #     print('Excel data contains duplicate Code values')
+    #     exit(0)
+
+    with open('/home/sshakya/PycharmProjects/manushi_parser/query/excel_wi_ins.sql', 'w') as w:
+        print(dir(w))
+        w.writelines(excel_wi_ins)
+
+    new_db.exec_file_sql("/home/sshakya/PycharmProjects/manushi_parser/query/excel_wi_ins.sql")
 
     asdf = 10
 
@@ -499,7 +509,7 @@ def main():
                    user='root',
                    password='password')
 
-    to_db = DbConn(db='db_manushi2',
+    to_db = DbConn(db='db_manushi2_migrate',
                    user='root',
                    password='password')
     tables = mysql.exec_query("show tables")
@@ -519,9 +529,9 @@ def main():
     migrate_client(mysql, to_db)
     to_db.exec_file_sql("/home/sshakya/PycharmProjects/manushi_parser/query/client.sql")
 
-    migrate_batch_entry(mysql, to_db)
+    # migrate_batch_entry(mysql, to_db)
 
-    migrate_shipping(mysql, to_db)
+    # migrate_shipping(mysql, to_db)
 
     migrate_excel(to_db, "/home/sshakya/PycharmProjects/manushi_parser/valid_data/valid.csv")
 
